@@ -1,0 +1,281 @@
+﻿{
+  "name": "PropIQ â€” Lead Reminder & Re-Engagement Pipeline",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 12
+            }
+          ]
+        }
+      },
+      "id": "cron-trigger",
+      "name": "Every 12 Hours",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $vars.SUPABASE_URL }}/rest/v1/leads?booking_status=eq.pending&status=in.(hot,warm)&select=*",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{ $vars.SUPABASE_SERVICE_KEY }}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $vars.SUPABASE_SERVICE_KEY }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "get-pending-leads",
+      "name": "Get Pending Leads",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Categorize leads by age for reminder timing\nconst leads = $input.all();\nconst now = new Date();\n\nconst reminder1 = []; // 24-48 hours old\nconst reminder2 = []; // 48-72 hours old  \nconst cold = [];      // 72+ hours old\n\nfor (const item of leads) {\n  const lead = Array.isArray(item.json) ? item.json : [item.json];\n  \n  for (const l of lead) {\n    if (!l.id) continue;\n    \n    const createdAt = new Date(l.created_at);\n    const hoursOld = (now - createdAt) / (1000 * 60 * 60);\n    \n    const lastContacted = l.last_contacted ? new Date(l.last_contacted) : createdAt;\n    const hoursSinceContact = (now - lastContacted) / (1000 * 60 * 60);\n    \n    if (hoursSinceContact >= 72) {\n      cold.push(l);\n    } else if (hoursSinceContact >= 48) {\n      reminder2.push(l);\n    } else if (hoursSinceContact >= 24) {\n      reminder1.push(l);\n    }\n  }\n}\n\nreturn [\n  ...reminder1.map(l => ({ json: { ...l, reminder_number: 1 } })),\n  ...reminder2.map(l => ({ json: { ...l, reminder_number: 2 } })),\n  ...cold.map(l => ({ json: { ...l, reminder_number: 3, mark_cold: true } }))\n];"
+      },
+      "id": "categorize-leads",
+      "name": "Categorize by Age",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {},
+          "conditions": [
+            {
+              "leftValue": "={{ $json.mark_cold }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ]
+        }
+      },
+      "id": "is-cold",
+      "name": "Mark as Cold?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $vars.SUPABASE_URL }}/rest/v1/leads?id=eq.{{ $json.id }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{ $vars.SUPABASE_SERVICE_KEY }}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $vars.SUPABASE_SERVICE_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"status\": \"cold\",\n  \"booking_status\": \"pending\"\n}",
+        "options": {}
+      },
+      "id": "mark-cold",
+      "name": "Mark Lead Cold",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1120, 160]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $vars.SUPABASE_URL }}/rest/v1/activity_logs",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{ $vars.SUPABASE_SERVICE_KEY }}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $vars.SUPABASE_SERVICE_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"lead_id\": \"{{ $json.id }}\",\n  \"action\": \"marked_cold\",\n  \"details\": \"Lead automatically marked as cold after 72 hours without booking\"\n}",
+        "options": {}
+      },
+      "id": "log-cold",
+      "name": "Log Cold Status",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1340, 160]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.resend.com/emails",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $vars.RESEND_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"from\": \"{{ $vars.RESEND_FROM_EMAIL }}\",\n  \"to\": [\"{{ $json.email }}\"],\n  \"subject\": \"{{ $json.reminder_number === 1 ? 'Still interested? Your consultation slot is waiting' : 'Final reminder â€” Your consultation expires soon' }}\",\n  \"html\": \"<html><body style='background:#0a0a0a;font-family:Arial,sans-serif;padding:40px;'><div style='max-width:600px;margin:0 auto;background:#111111;border:1px solid rgba(255,255,255,0.08);border-radius:24px;padding:48px;'><h1 style='color:#ffffff;font-size:24px;margin-bottom:16px;'>{{ $json.reminder_number === 1 ? 'We saved your spot.' : 'Last chance to book.' }}</h1><p style='color:rgba(255,255,255,0.6);font-size:15px;line-height:1.7;margin-bottom:32px;'>{{ $json.name }}, your inquiry for {{ $json.property_type }} in {{ $json.location }} is still waiting for a consultation booking.</p><div style='text-align:center;'><a href='{{ $vars.APP_URL }}/book/{{ $json.id }}' style='display:inline-block;background:#00E5FF;color:#000;font-size:15px;font-weight:700;text-decoration:none;padding:16px 40px;border-radius:100px;'>Book Now â€” It's Free â†’</a></div></div></body></html>\"\n}",
+        "options": {}
+      },
+      "id": "send-reminder",
+      "name": "Send Reminder Email",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1120, 440]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $vars.SUPABASE_URL }}/rest/v1/leads?id=eq.{{ $json.id }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{ $vars.SUPABASE_SERVICE_KEY }}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $vars.SUPABASE_SERVICE_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"last_contacted\": \"{{ new Date().toISOString() }}\"\n}",
+        "options": {}
+      },
+      "id": "update-last-contacted",
+      "name": "Update Last Contacted",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1340, 440]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $vars.SUPABASE_URL }}/rest/v1/activity_logs",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{ $vars.SUPABASE_SERVICE_KEY }}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $vars.SUPABASE_SERVICE_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"lead_id\": \"{{ $('Send Reminder Email').first().json.lead_id || '' }}\",\n  \"action\": \"reminder_sent\",\n  \"details\": \"Reminder #{{ $('Categorize by Age').first().json.reminder_number }} sent to lead\"\n}",
+        "options": {}
+      },
+      "id": "log-reminder",
+      "name": "Log Reminder",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1560, 440]
+    }
+  ],
+  "connections": {
+    "Every 12 Hours": {
+      "main": [
+        [{ "node": "Get Pending Leads", "type": "main", "index": 0 }]
+      ]
+    },
+    "Get Pending Leads": {
+      "main": [
+        [{ "node": "Categorize by Age", "type": "main", "index": 0 }]
+      ]
+    },
+    "Categorize by Age": {
+      "main": [
+        [{ "node": "Mark as Cold?", "type": "main", "index": 0 }]
+      ]
+    },
+    "Mark as Cold?": {
+      "main": [
+        [{ "node": "Mark Lead Cold", "type": "main", "index": 0 }],
+        [{ "node": "Send Reminder Email", "type": "main", "index": 0 }]
+      ]
+    },
+    "Mark Lead Cold": {
+      "main": [
+        [{ "node": "Log Cold Status", "type": "main", "index": 0 }]
+      ]
+    },
+    "Send Reminder Email": {
+      "main": [
+        [{ "node": "Update Last Contacted", "type": "main", "index": 0 }]
+      ]
+    },
+    "Update Last Contacted": {
+      "main": [
+        [{ "node": "Log Reminder", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": [
+    { "name": "real-estate" },
+    { "name": "reminders" },
+    { "name": "re-engagement" }
+  ]
+}

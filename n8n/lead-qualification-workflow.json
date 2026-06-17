@@ -1,0 +1,466 @@
+﻿{
+  "name": "PropIQ â€” Lead Qualification Pipeline",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "lead-qualification",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-trigger",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [240, 300],
+      "webhookId": "lead-qualification-webhook"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Validate incoming lead data\nconst body = $input.first().json.body || $input.first().json;\n\nconst required = ['name', 'email', 'property_type'];\nconst errors = [];\n\nfor (const field of required) {\n  if (!body[field] || body[field].toString().trim() === '') {\n    errors.push(`Missing required field: ${field}`);\n  }\n}\n\nif (body.email && !/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(body.email)) {\n  errors.push('Invalid email format');\n}\n\nif (errors.length > 0) {\n  throw new Error(`Validation failed: ${errors.join(', ')}`);\n}\n\nreturn [{\n  json: {\n    name: body.name.trim(),\n    email: body.email.trim().toLowerCase(),\n    phone: (body.phone || '').trim(),\n    location: (body.location || '').trim(),\n    property_type: body.property_type.trim(),\n    budget: (body.budget || '').trim(),\n    message: (body.message || '').trim(),\n    timestamp: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "validate-data",
+      "name": "Validate Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $vars.GROQ_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": []
+        },
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"llama-3.3-70b-versatile\",\n  \"temperature\": 0.1,\n  \"max_tokens\": 500,\n  \"response_format\": { \"type\": \"json_object\" },\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are a real estate lead qualification AI. Always respond with valid JSON only.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Analyze this real estate inquiry and return JSON only.\\n\\nLead: {{ $json.name }}\\nEmail: {{ $json.email }}\\nLocation: {{ $json.location }}\\nProperty Type: {{ $json.property_type }}\\nBudget: {{ $json.budget }}\\nMessage: {{ $json.message }}\\n\\nScoring Criteria (0-10):\\n- Budget specified (0-2): vague=0, range=1, specific=2\\n- Property type specified (0-2): none=0, general=1, specific=2\\n- Urgency signals (0-2): none=0, moderate=1, high=2\\n- Message detail level (0-2): minimal=0, moderate=1, detailed=2\\n- Purchase intent (0-2): browsing=0, considering=1, ready=2\\n\\nReturn ONLY this JSON:\\n{\\\"lead_score\\\": 0-10, \\\"intent\\\": \\\"buying|renting|investing|browsing\\\", \\\"urgency\\\": \\\"immediate|within_3_months|within_6_months|flexible|unknown\\\", \\\"buyer_type\\\": \\\"first_time_buyer|repeat_buyer|investor|downsizer|upsizer|relocating|unknown\\\", \\\"reasoning\\\": \\\"1-2 sentences\\\", \\\"close_probability\\\": 0-100}\"\n    }\n  ]\n}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "groq-qualification",
+      "name": "Groq AI Qualification",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse Groq response and prepare lead data\nconst leadData = $('Validate Data').first().json;\nconst groqResponse = $input.first().json;\n\nlet qualification = {\n  lead_score: 5,\n  intent: 'unknown',\n  urgency: 'unknown',\n  buyer_type: 'unknown',\n  reasoning: 'AI qualification unavailable',\n  close_probability: 40\n};\n\ntry {\n  const content = groqResponse.choices[0].message.content;\n  qualification = JSON.parse(content);\n} catch (e) {\n  console.log('Failed to parse Groq response:', e.message);\n}\n\nconst status = qualification.lead_score >= 8 ? 'hot' : \n               qualification.lead_score >= 5 ? 'warm' : 'cold';\n\nreturn [{\n  json: {\n    ...leadData,\n    lead_score: qualification.lead_score,\n    intent: qualification.intent,\n    urgency: qualification.urgency,\n    buyer_type: qualification.buyer_type,\n    reasoning: qualification.reasoning,\n    close_probability: qualification.close_probability,\n    status: status,\n    booking_status: 'pending',\n    is_hot_lead: qualification.lead_score >= 8\n  }\n}];"
+      },
+      "id": "parse-qualification",
+      "name": "Parse Qualification",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $vars.SUPABASE_URL }}/rest/v1/leads",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{ $vars.SUPABASE_SERVICE_KEY }}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $vars.SUPABASE_SERVICE_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Prefer",
+              "value": "return=representation"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"name\": \"{{ $json.name }}\",\n  \"email\": \"{{ $json.email }}\",\n  \"phone\": \"{{ $json.phone }}\",\n  \"location\": \"{{ $json.location }}\",\n  \"property_type\": \"{{ $json.property_type }}\",\n  \"budget\": \"{{ $json.budget }}\",\n  \"message\": \"{{ $json.message }}\",\n  \"lead_score\": {{ $json.lead_score }},\n  \"status\": \"{{ $json.status }}\",\n  \"booking_status\": \"pending\",\n  \"close_probability\": {{ $json.close_probability }}\n}",
+        "options": {}
+      },
+      "id": "store-lead-supabase",
+      "name": "Store Lead in Supabase",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1120, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract stored lead and check if hot\nconst leadData = $('Parse Qualification').first().json;\nconst storedLead = $input.first().json;\n\n// Supabase returns an array\nconst lead = Array.isArray(storedLead) ? storedLead[0] : storedLead;\n\nreturn [{\n  json: {\n    ...leadData,\n    lead_id: lead.id,\n    created_at: lead.created_at,\n    is_hot: leadData.lead_score >= 8\n  }\n}];"
+      },
+      "id": "prepare-routing",
+      "name": "Prepare Routing",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1340, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "hot-lead-check",
+              "leftValue": "={{ $json.is_hot }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "route-by-score",
+      "name": "Route by Score",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1560, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $vars.GROQ_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"llama-3.3-70b-versatile\",\n  \"temperature\": 0.3,\n  \"max_tokens\": 1000,\n  \"response_format\": { \"type\": \"json_object\" },\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are an expert real estate consultant generating meeting briefs. Respond with valid JSON only.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Generate a meeting prep brief for:\\n\\nClient: {{ $json.name }}\\nProperty: {{ $json.property_type }} in {{ $json.location }}\\nBudget: {{ $json.budget }}\\nLead Score: {{ $json.lead_score }}/10\\nMessage: {{ $json.message }}\\n\\nReturn JSON: {\\\"summary\\\": \\\"...\\\", \\\"buyer_intent\\\": \\\"...\\\", \\\"objections\\\": \\\"comma-separated list\\\", \\\"suggested_questions\\\": \\\"newline-separated questions\\\"}\"\n    }\n  ]\n}",
+        "options": {}
+      },
+      "id": "generate-meeting-brief",
+      "name": "Generate Meeting Brief",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1780, 160]
+    },
+    {
+      "parameters": {
+        "jsCode": "const leadData = $('Prepare Routing').first().json;\nconst briefResponse = $input.first().json;\n\nlet brief = {\n  summary: 'Hot lead requiring immediate attention.',\n  buyer_intent: 'Strong purchase intent detected.',\n  objections: 'Price, timeline, property availability',\n  suggested_questions: 'What is your ideal move-in date? | Have you been pre-approved for financing? | What are your must-have features?'\n};\n\ntry {\n  const content = briefResponse.choices[0].message.content;\n  brief = JSON.parse(content);\n} catch (e) {\n  console.log('Failed to parse brief:', e.message);\n}\n\nconst sanitize = (str) => (str || '').replace(/\\n/g, ' | ').replace(/\\r/g, '').replace(/\"/g, \"'\");\n\nreturn [{\n  json: {\n    ...leadData,\n    brief_summary: sanitize(brief.summary),\n    brief_buyer_intent: sanitize(brief.buyer_intent),\n    brief_objections: sanitize(brief.objections),\n    brief_suggested_questions: sanitize(brief.suggested_questions)\n  }\n}];"
+      },
+      "id": "parse-brief",
+      "name": "Parse Meeting Brief",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2000, 160]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $vars.SUPABASE_URL }}/rest/v1/meeting_briefs",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{ $vars.SUPABASE_SERVICE_KEY }}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $vars.SUPABASE_SERVICE_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"lead_id\": \"{{ $json.lead_id }}\",\n  \"summary\": \"{{ $json.brief_summary }}\",\n  \"buyer_intent\": \"{{ $json.brief_buyer_intent }}\",\n  \"objections\": \"{{ $json.brief_objections }}\",\n  \"suggested_questions\": \"{{ $json.brief_suggested_questions }}\"\n}",
+        "options": {}
+      },
+      "id": "store-meeting-brief",
+      "name": "Store Meeting Brief",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2220, 160]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.resend.com/emails",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $vars.RESEND_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"from\": \"{{ $vars.RESEND_FROM_EMAIL }}\",\n  \"to\": [\"{{ $json.email }}\"],\n  \"subject\": \"Your Property Consultation is Ready, {{ $json.name }}\",\n  \"html\": \"<html><body style='background:#0a0a0a;font-family:Arial,sans-serif;padding:40px;'><div style='max-width:600px;margin:0 auto;background:#111111;border:1px solid rgba(255,255,255,0.08);border-radius:24px;padding:48px;'><h1 style='color:#ffffff;font-size:24px;margin-bottom:16px;'>{{ $json.name }}, your consultation is ready.</h1><p style='color:rgba(255,255,255,0.6);font-size:15px;line-height:1.7;margin-bottom:32px;'>We've reviewed your inquiry for <strong style='color:#fff;'>{{ $json.property_type }}</strong> in <strong style='color:#fff;'>{{ $json.location }}</strong> and have matched you with a specialist ready to help.</p><div style='background:rgba(0,229,255,0.05);border:1px solid rgba(0,229,255,0.15);border-radius:16px;padding:24px;margin-bottom:32px;'><p style='color:rgba(255,255,255,0.5);font-size:13px;margin:0 0 8px;text-transform:uppercase;letter-spacing:0.1em;'>AI Assessment</p><p style='color:#00E5FF;font-size:20px;font-weight:700;margin:0;'>Lead Score: {{ $json.lead_score }}/10</p></div><div style='text-align:center;'><a href='{{ $vars.APP_URL }}/book/{{ $json.lead_id }}' style='display:inline-block;background:#00E5FF;color:#000000;font-size:15px;font-weight:700;text-decoration:none;padding:16px 40px;border-radius:100px;'>Book Your Consultation â†’</a></div></div></body></html>\"\n}",
+        "options": {}
+      },
+      "id": "send-booking-email",
+      "name": "Send Booking Email",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2440, 160]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.resend.com/emails",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $vars.RESEND_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"from\": \"{{ $vars.RESEND_FROM_EMAIL }}\",\n  \"to\": [\"{{ $vars.AGENT_EMAIL }}\"],\n  \"subject\": \"ðŸ”¥ Hot Lead Alert: {{ $json.name }} (Score: {{ $json.lead_score }}/10)\",\n  \"html\": \"<html><body style='background:#0a0a0a;font-family:Arial,sans-serif;padding:40px;'><div style='max-width:600px;margin:0 auto;background:#111111;border:1px solid rgba(255,255,255,0.08);border-radius:24px;padding:48px;'><div style='background:rgba(255,100,0,0.1);border:1px solid rgba(255,100,0,0.3);border-radius:100px;display:inline-block;padding:8px 20px;margin-bottom:24px;'><span style='color:#FF6400;font-size:12px;font-weight:600;text-transform:uppercase;'>ðŸ”¥ Hot Lead Alert</span></div><h1 style='color:#ffffff;font-size:22px;margin:0 0 8px;'>New qualified lead: {{ $json.name }}</h1><p style='color:#00E5FF;font-size:28px;font-weight:800;margin:0 0 24px;'>Score: {{ $json.lead_score }}/10 â€¢ {{ $json.close_probability }}% close probability</p><table style='width:100%;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:16px;padding:20px;border-spacing:0;'><tr><td style='padding:8px 16px 8px 0;color:rgba(255,255,255,0.5);font-size:13px;'>Email</td><td style='padding:8px 0;color:#fff;font-size:13px;font-weight:600;'>{{ $json.email }}</td></tr><tr><td style='padding:8px 16px 8px 0;color:rgba(255,255,255,0.5);font-size:13px;'>Property</td><td style='padding:8px 0;color:#fff;font-size:13px;font-weight:600;'>{{ $json.property_type }} in {{ $json.location }}</td></tr><tr><td style='padding:8px 16px 8px 0;color:rgba(255,255,255,0.5);font-size:13px;'>Budget</td><td style='padding:8px 0;color:#fff;font-size:13px;font-weight:600;'>{{ $json.budget }}</td></tr><tr><td style='padding:8px 16px 8px 0;color:rgba(255,255,255,0.5);font-size:13px;'>Intent</td><td style='padding:8px 0;color:#fff;font-size:13px;font-weight:600;'>{{ $json.intent }}</td></tr></table><div style='text-align:center;margin-top:32px;'><a href='{{ $vars.APP_URL }}/dashboard/leads' style='display:inline-block;background:#00E5FF;color:#000;font-size:14px;font-weight:700;text-decoration:none;padding:14px 32px;border-radius:12px;'>View Dashboard â†’</a></div></div></body></html>\"\n}",
+        "options": {}
+      },
+      "id": "notify-agent-hot",
+      "name": "Notify Agent (Hot Lead)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2660, 160]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $vars.SUPABASE_URL }}/rest/v1/activity_logs",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{ $vars.SUPABASE_SERVICE_KEY }}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $vars.SUPABASE_SERVICE_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"lead_id\": \"{{ $('Parse Meeting Brief').first().json.lead_id }}\",\n  \"action\": \"hot_lead_pipeline_completed\",\n  \"details\": \"Hot lead pipeline executed: meeting brief generated, booking email sent, agent notified. Score: {{ $('Parse Meeting Brief').first().json.lead_score }}/10\"\n}",
+        "options": {}
+      },
+      "id": "log-hot-lead-activity",
+      "name": "Log Hot Lead Activity",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2880, 160]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.resend.com/emails",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $vars.RESEND_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"from\": \"{{ $vars.RESEND_FROM_EMAIL }}\",\n  \"to\": [\"{{ $json.email }}\"],\n  \"subject\": \"We received your property inquiry â€” {{ $json.name }}\",\n  \"html\": \"<html><body style='background:#0a0a0a;font-family:Arial,sans-serif;padding:40px;'><div style='max-width:600px;margin:0 auto;background:#111111;border:1px solid rgba(255,255,255,0.08);border-radius:24px;padding:48px;'><h1 style='color:#ffffff;font-size:24px;margin-bottom:16px;'>Hi {{ $json.name }}, we're on it.</h1><p style='color:rgba(255,255,255,0.6);font-size:15px;line-height:1.7;'>Thanks for your interest in {{ $json.property_type }}. One of our specialists will review your requirements and reach out within 24-48 hours with personalized recommendations.</p><p style='color:rgba(255,255,255,0.4);font-size:13px;margin-top:24px;'>The PropIQ Team</p></div></body></html>\"\n}",
+        "options": {}
+      },
+      "id": "nurture-email",
+      "name": "Send Nurture Email",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1780, 440]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $vars.SUPABASE_URL }}/rest/v1/activity_logs",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{ $vars.SUPABASE_SERVICE_KEY }}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $vars.SUPABASE_SERVICE_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"lead_id\": \"{{ $('Prepare Routing').first().json.lead_id }}\",\n  \"action\": \"nurture_email_sent\",\n  \"details\": \"Lead score {{ $('Prepare Routing').first().json.lead_score }}/10 â€” placed in nurture sequence. Intent: {{ $('Prepare Routing').first().json.intent }}\"\n}",
+        "options": {}
+      },
+      "id": "log-nurture-activity",
+      "name": "Log Nurture Activity",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2000, 440]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"success\": true,\n  \"lead_id\": \"{{ $('Prepare Routing').first().json.lead_id }}\",\n  \"score\": {{ $('Prepare Routing').first().json.lead_score }},\n  \"status\": \"{{ $('Prepare Routing').first().json.status }}\",\n  \"message\": \"Lead qualified and processed successfully\"\n}",
+        "options": {}
+      },
+      "id": "respond-success",
+      "name": "Send Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [3100, 300]
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": {
+      "main": [
+        [{ "node": "Validate Data", "type": "main", "index": 0 }]
+      ]
+    },
+    "Validate Data": {
+      "main": [
+        [{ "node": "Groq AI Qualification", "type": "main", "index": 0 }]
+      ]
+    },
+    "Groq AI Qualification": {
+      "main": [
+        [{ "node": "Parse Qualification", "type": "main", "index": 0 }]
+      ]
+    },
+    "Parse Qualification": {
+      "main": [
+        [{ "node": "Store Lead in Supabase", "type": "main", "index": 0 }]
+      ]
+    },
+    "Store Lead in Supabase": {
+      "main": [
+        [{ "node": "Prepare Routing", "type": "main", "index": 0 }]
+      ]
+    },
+    "Prepare Routing": {
+      "main": [
+        [{ "node": "Route by Score", "type": "main", "index": 0 }]
+      ]
+    },
+    "Route by Score": {
+      "main": [
+        [{ "node": "Generate Meeting Brief", "type": "main", "index": 0 }],
+        [{ "node": "Send Nurture Email", "type": "main", "index": 0 }]
+      ]
+    },
+    "Generate Meeting Brief": {
+      "main": [
+        [{ "node": "Parse Meeting Brief", "type": "main", "index": 0 }]
+      ]
+    },
+    "Parse Meeting Brief": {
+      "main": [
+        [{ "node": "Store Meeting Brief", "type": "main", "index": 0 }]
+      ]
+    },
+    "Store Meeting Brief": {
+      "main": [
+        [{ "node": "Send Booking Email", "type": "main", "index": 0 }]
+      ]
+    },
+    "Send Booking Email": {
+      "main": [
+        [{ "node": "Notify Agent (Hot Lead)", "type": "main", "index": 0 }]
+      ]
+    },
+    "Notify Agent (Hot Lead)": {
+      "main": [
+        [{ "node": "Log Hot Lead Activity", "type": "main", "index": 0 }]
+      ]
+    },
+    "Log Hot Lead Activity": {
+      "main": [
+        [{ "node": "Send Response", "type": "main", "index": 0 }]
+      ]
+    },
+    "Send Nurture Email": {
+      "main": [
+        [{ "node": "Log Nurture Activity", "type": "main", "index": 0 }]
+      ]
+    },
+    "Log Nurture Activity": {
+      "main": [
+        [{ "node": "Send Response", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [
+    { "name": "real-estate" },
+    { "name": "ai-qualification" },
+    { "name": "lead-pipeline" }
+  ],
+  "triggerCount": 1,
+  "versionId": "1.0.0"
+}
