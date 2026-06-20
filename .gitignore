@@ -12,3 +12,5 @@ out/
 
 # Keep example
 !.env.example
+
+.vercel

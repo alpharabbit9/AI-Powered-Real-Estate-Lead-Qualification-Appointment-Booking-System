@@ -1,0 +1,988 @@
+{
+  "name": "PropIQ â€” Lead Reminder & Re-Engagement Pipeline",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "lead-qualification",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "488d89ee-9ac8-428d-9a83-95e7beb4e695",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -64,
+        384
+      ],
+      "webhookId": "lead-qualification-webhook"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Validate incoming lead data\nconst body = $input.first().json.body || $input.first().json;\n\nconst required = ['name', 'email', 'property_type'];\nconst errors = [];\n\nfor (const field of required) {\n  if (!body[field] || body[field].toString().trim() === '') {\n    errors.push(`Missing required field: ${field}`);\n  }\n}\n\nif (body.email && !/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(body.email)) {\n  errors.push('Invalid email format');\n}\n\nif (errors.length > 0) {\n  throw new Error(`Validation failed: ${errors.join(', ')}`);\n}\n\nreturn [{\n  json: {\n    name: body.name.trim(),\n    email: body.email.trim().toLowerCase(),\n    phone: (body.phone || '').trim(),\n    location: (body.location || '').trim(),\n    property_type: body.property_type.trim(),\n    budget: (body.budget || '').trim(),\n    message: (body.message || '').trim(),\n    timestamp: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "0c5cc36e-4f22-4eaa-897b-e0a23fe79e9e",
+      "name": "Validate Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        160,
+        384
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.GROQ_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"llama-3.1-8b-instant\",\n  \"temperature\": 0.1,\n  \"max_tokens\": 500,\n  \"response_format\": { \"type\": \"json_object\" },\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are a real estate lead qualification AI. Always respond with valid JSON only.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Analyze this real estate inquiry and return JSON only.\\n\\nLead: {{ $json.name }}\\nEmail: {{ $json.email }}\\nLocation: {{ $json.location }}\\nProperty Type: {{ $json.property_type }}\\nBudget: {{ $json.budget }}\\nMessage: {{ $json.message }}\\n\\nScoring Criteria (0-10):\\n- Budget specified (0-2): vague=0, range=1, specific=2\\n- Property type specified (0-2): none=0, general=1, specific=2\\n- Urgency signals (0-2): none=0, moderate=1, high=2\\n- Message detail level (0-2): minimal=0, moderate=1, detailed=2\\n- Purchase intent (0-2): browsing=0, considering=1, ready=2\\n\\nReturn ONLY this JSON:\\n{\\\"lead_score\\\": 0-10, \\\"intent\\\": \\\"buying|renting|investing|browsing\\\", \\\"urgency\\\": \\\"immediate|within_3_months|within_6_months|flexible|unknown\\\", \\\"buyer_type\\\": \\\"first_time_buyer|repeat_buyer|investor|downsizer|upsizer|relocating|unknown\\\", \\\"reasoning\\\": \\\"1-2 sentences\\\", \\\"close_probability\\\": 0-100}\"\n    }\n  ]\n}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "d7b929c0-b379-49b4-9e2b-4f47a56996b9",
+      "name": "Groq AI Qualification",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        384,
+        384
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse Groq response and prepare lead data\nconst leadData = $('Validate Data').first().json;\nconst groqResponse = $input.first().json;\n\nlet qualification = {\n  lead_score: 5,\n  intent: 'unknown',\n  urgency: 'unknown',\n  buyer_type: 'unknown',\n  reasoning: 'AI qualification unavailable',\n  close_probability: 40\n};\n\ntry {\n  const content = groqResponse.choices[0].message.content;\n  qualification = JSON.parse(content);\n} catch (e) {\n  console.log('Failed to parse Groq response:', e.message);\n}\n\nconst status = qualification.lead_score >= 8 ? 'hot' : \n               qualification.lead_score >= 5 ? 'warm' : 'cold';\n\nreturn [{\n  json: {\n    ...leadData,\n    lead_score: qualification.lead_score,\n    intent: qualification.intent,\n    urgency: qualification.urgency,\n    buyer_type: qualification.buyer_type,\n    reasoning: qualification.reasoning,\n    close_probability: qualification.close_probability,\n    status: status,\n    booking_status: 'pending',\n    is_hot_lead: qualification.lead_score >= 8\n  }\n}];"
+      },
+      "id": "2e16b6b6-f2e8-4ae0-8d96-c856ffcd3c06",
+      "name": "Parse Qualification",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        592,
+        384
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://zgrgklchoqbnucybtlrq.supabase.co/rest/v1/leads",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpncmdrbGNob3FibnVjeWJ0bHJxIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4MTYyMDQ4NSwiZXhwIjoyMDk3MTk2NDg1fQ.75e3nmsaknTrqPvLaSnIzlLZqfulYx2gCbvSnitWpk0"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpncmdrbGNob3FibnVjeWJ0bHJxIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4MTYyMDQ4NSwiZXhwIjoyMDk3MTk2NDg1fQ.75e3nmsaknTrqPvLaSnIzlLZqfulYx2gCbvSnitWpk0"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Prefer",
+              "value": "return=representation"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"name\": \"{{ $json.name }}\",\n  \"email\": \"{{ $json.email }}\",\n  \"phone\": \"{{ $json.phone }}\",\n  \"location\": \"{{ $json.location }}\",\n  \"property_type\": \"{{ $json.property_type }}\",\n  \"budget\": \"{{ $json.budget }}\",\n  \"message\": \"{{ $json.message }}\",\n  \"lead_score\": {{ $json.lead_score }},\n  \"status\": \"{{ $json.status }}\",\n  \"booking_status\": \"pending\",\n  \"close_probability\": {{ $json.close_probability }}\n}",
+        "options": {}
+      },
+      "id": "2be8e4fc-f7fd-4211-bfb5-1f31b35136a7",
+      "name": "Store Lead in Supabase",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        816,
+        384
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract stored lead and check if hot\nconst leadData = $('Parse Qualification').first().json;\nconst storedLead = $input.first().json;\n\n// Supabase returns an array\nconst lead = Array.isArray(storedLead) ? storedLead[0] : storedLead;\n\nreturn [{\n  json: {\n    ...leadData,\n    lead_id: lead.id,\n    created_at: lead.created_at,\n    is_hot: leadData.lead_score >= 8\n  }\n}];"
+      },
+      "id": "1a658461-dffa-4d38-a363-12326a75535f",
+      "name": "Prepare Routing",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1040,
+        384
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "hot-lead-check",
+              "leftValue": "={{ $json.is_hot }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "26b8e238-4e1a-408c-bfaf-97c1dda46f9c",
+      "name": "Route by Score",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1264,
+        384
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.GROQ_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"llama-3.1-8b-instant\",\n  \"temperature\": 0.3,\n  \"max_tokens\": 1000,\n  \"response_format\": { \"type\": \"json_object\" },\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are an expert real estate consultant generating meeting briefs. Respond with valid JSON only.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Generate a meeting prep brief for:\\n\\nClient: {{ $json.name }}\\nProperty: {{ $json.property_type }} in {{ $json.location }}\\nBudget: {{ $json.budget }}\\nLead Score: {{ $json.lead_score }}/10\\nMessage: {{ $json.message }}\\n\\nReturn JSON: {\\\"summary\\\": \\\"...\\\", \\\"buyer_intent\\\": \\\"...\\\", \\\"objections\\\": \\\"comma-separated list\\\", \\\"suggested_questions\\\": \\\"newline-separated questions\\\"}\"\n    }\n  ]\n}",
+        "options": {}
+      },
+      "id": "77cb1dd0-54dd-4ccf-acb0-4d81b00f401e",
+      "name": "Generate Meeting Brief",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1472,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const leadData = $('Prepare Routing').first().json;\nconst briefResponse = $input.first().json;\n\nlet brief = {\n  summary: 'Hot lead requiring immediate attention.',\n  buyer_intent: 'Strong purchase intent detected.',\n  objections: 'Price, timeline, property availability',\n  suggested_questions: 'What is your ideal move-in date? | Have you been pre-approved for financing? | What are your must-have features?'\n};\n\ntry {\n  const content = briefResponse.choices[0].message.content;\n  brief = JSON.parse(content);\n} catch (e) {\n  console.log('Failed to parse brief:', e.message);\n}\n\nconst sanitize = (str) => (str || '').replace(/\\n/g, ' | ').replace(/\\r/g, '').replace(/\"/g, \"'\");\n\nreturn [{\n  json: {\n    ...leadData,\n    brief_summary: sanitize(brief.summary),\n    brief_buyer_intent: sanitize(brief.buyer_intent),\n    brief_objections: sanitize(brief.objections),\n    brief_suggested_questions: sanitize(brief.suggested_questions)\n  }\n}];"
+      },
+      "id": "409753a9-af33-4204-9ad1-888c4f8ba2fa",
+      "name": "Parse Meeting Brief",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1696,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://zgrgklchoqbnucybtlrq.supabase.co/rest/v1/meeting_briefs",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpncmdrbGNob3FibnVjeWJ0bHJxIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4MTYyMDQ4NSwiZXhwIjoyMDk3MTk2NDg1fQ.75e3nmsaknTrqPvLaSnIzlLZqfulYx2gCbvSnitWpk0"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpncmdrbGNob3FibnVjeWJ0bHJxIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4MTYyMDQ4NSwiZXhwIjoyMDk3MTk2NDg1fQ.75e3nmsaknTrqPvLaSnIzlLZqfulYx2gCbvSnitWpk0"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"lead_id\": \"{{ $json.lead_id }}\",\n  \"summary\": \"{{ $json.brief_summary }}\",\n  \"buyer_intent\": \"{{ $json.brief_buyer_intent }}\",\n  \"objections\": \"{{ $json.brief_objections }}\",\n  \"suggested_questions\": \"{{ $json.brief_suggested_questions }}\"\n}",
+        "options": {}
+      },
+      "id": "6395ad00-0548-4088-8a8b-b7cdd9ac4f0d",
+      "name": "Store Meeting Brief",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1936,
+        256
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.resend.com/emails",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer re_T3M6hV92_Ess3KCxWtf2xNLY1GgWLaw7C"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"from\": \"onboarding@resend.dev\",\n  \"to\": [\"{{ $('Parse Meeting Brief').first().json.email.trim() }}\"],\n  \"subject\": \"Your Property Consultation is Ready, {{ $('Parse Meeting Brief').first().json.name }}\",\n  \"html\": \"<html><body style='background:#0a0a0a;font-family:Arial,sans-serif;padding:40px;'><div style='max-width:600px;margin:0 auto;background:#111111;border:1px solid rgba(255,255,255,0.08);border-radius:24px;padding:48px;'><h1 style='color:#ffffff;font-size:24px;margin-bottom:16px;'>{{ $('Parse Meeting Brief').first().json.name }}, your consultation is ready.</h1><p style='color:rgba(255,255,255,0.6);font-size:15px;line-height:1.7;margin-bottom:32px;'>We reviewed your inquiry for <strong style='color:#fff;'>{{ $('Parse Meeting Brief').first().json.property_type }}</strong> in <strong style='color:#fff;'>{{ $('Parse Meeting Brief').first().json.location }}</strong> and matched you with a specialist.</p><div style='background:rgba(0,229,255,0.05);border:1px solid rgba(0,229,255,0.15);border-radius:16px;padding:24px;margin-bottom:32px;'><p style='color:rgba(255,255,255,0.5);font-size:13px;margin:0 0 8px;text-transform:uppercase;letter-spacing:0.1em;'>AI Assessment</p><p style='color:#00E5FF;font-size:20px;font-weight:700;margin:0;'>Lead Score: {{ $('Parse Meeting Brief').first().json.lead_score }}/10</p></div><div style='text-align:center;'><a href='http://localhost:3000/book/{{ $('Parse Meeting Brief').first().json.lead_id }}' style='display:inline-block;background:#00E5FF;color:#000000;font-size:15px;font-weight:700;text-decoration:none;padding:16px 40px;border-radius:100px;'>Book Your Consultation</a></div></div></body></html>\"\n}",
+        "options": {}
+      },
+      "id": "cb809db3-1644-4a62-941c-a4be0de3d06d",
+      "name": "Send Booking Email",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2144,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.resend.com/emails",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer re_T3M6hV92_Ess3KCxWtf2xNLY1GgWLaw7C"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"from\": \"onboarding@resend.dev\",\n  \"to\": [\"rifatahm033@gmail.com\"],\n  \"subject\": \"ðŸ”¥ Hot Lead Alert: {{ $('Validate Data').item.json.name }} (Score: {{ $('Store Lead in Supabase').item.json.lead_score }}/10)\",\n  \"html\": \"<html><body style='background:#0a0a0a;font-family:Arial,sans-serif;padding:40px;'><div style='max-width:600px;margin:0 auto;background:#111111;border:1px solid rgba(255,255,255,0.08);border-radius:24px;padding:48px;'><div style='background:rgba(255,100,0,0.1);border:1px solid rgba(255,100,0,0.3);border-radius:100px;display:inline-block;padding:8px 20px;margin-bottom:24px;'><span style='color:#FF6400;font-size:12px;font-weight:600;text-transform:uppercase;'>ðŸ”¥ Hot Lead Alert</span></div><h1 style='color:#ffffff;font-size:22px;margin:0 0 8px;'>New qualified lead: {{ $('Validate Data').item.json.name }}</h1><p style='color:#00E5FF;font-size:28px;font-weight:800;margin:0 0 24px;'>Score: {{ $('Store Lead in Supabase').item.json.lead_score }}/10 â€¢ {{ $('Store Lead in Supabase').item.json.close_probability }}% close probability</p><table style='width:100%;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:16px;padding:20px;border-spacing:0;'><tr><td style='padding:8px 16px 8px 0;color:rgba(255,255,255,0.5);font-size:13px;'>Email</td><td style='padding:8px 0;color:#fff;font-size:13px;font-weight:600;'>{{ $('Validate Data').item.json.email }}</td></tr><tr><td style='padding:8px 16px 8px 0;color:rgba(255,255,255,0.5);font-size:13px;'>Property</td><td style='padding:8px 0;color:#fff;font-size:13px;font-weight:600;'>{{ $('Validate Data').item.json.property_type }} in {{ $('Validate Data').item.json.location }}</td></tr><tr><td style='padding:8px 16px 8px 0;color:rgba(255,255,255,0.5);font-size:13px;'>Budget</td><td style='padding:8px 0;color:#fff;font-size:13px;font-weight:600;'>{{ $('Parse Qualification').item.json.budget }}</td></tr><tr><td style='padding:8px 16px 8px 0;color:rgba(255,255,255,0.5);font-size:13px;'>Intent</td><td style='padding:8px 0;color:#fff;font-size:13px;font-weight:600;'>{{ $('Parse Qualification').item.json.intent }}</td></tr></table><div style='text-align:center;margin-top:32px;'><a href='http://localhost:3000/dashboard/leads' style='display:inline-block;background:#00E5FF;color:#000;font-size:14px;font-weight:700;text-decoration:none;padding:14px 32px;border-radius:12px;'>View Dashboard â†’</a></div></div></body></html>\"\n}",
+        "options": {}
+      },
+      "id": "fd8101c4-7a00-4fc5-9a25-f13d66a4c99d",
+      "name": "Notify Agent (Hot Lead)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2352,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://zgrgklchoqbnucybtlrq.supabase.co/rest/v1/activity_logs",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpncmdrbGNob3FibnVjeWJ0bHJxIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4MTYyMDQ4NSwiZXhwIjoyMDk3MTk2NDg1fQ.75e3nmsaknTrqPvLaSnIzlLZqfulYx2gCbvSnitWpk0"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpncmdrbGNob3FibnVjeWJ0bHJxIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4MTYyMDQ4NSwiZXhwIjoyMDk3MTk2NDg1fQ.75e3nmsaknTrqPvLaSnIzlLZqfulYx2gCbvSnitWpk0"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"lead_id\": \"{{ $('Parse Meeting Brief').first().json.lead_id }}\",\n  \"action\": \"hot_lead_pipeline_completed\",\n  \"details\": \"Hot lead pipeline executed: meeting brief generated, booking email sent, agent notified. Score: {{ $('Parse Meeting Brief').first().json.lead_score }}/10\"\n}",
+        "options": {}
+      },
+      "id": "8cb8d933-42d4-4502-b6fc-73ca584b8044",
+      "name": "Log Hot Lead Activity",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2576,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.resend.com/emails",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer re_T3M6hV92_Ess3KCxWtf2xNLY1GgWLaw7C"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"from\": \"onboarding@resend.dev\",\n  \"to\": [\"{{ $json.email }}\"],\n  \"subject\": \"We received your property inquiry â€” {{ $json.name }}\",\n  \"html\": \"<html><body style='background:#0a0a0a;font-family:Arial,sans-serif;padding:40px;'><div style='max-width:600px;margin:0 auto;background:#111111;border:1px solid rgba(255,255,255,0.08);border-radius:24px;padding:48px;'><h1 style='color:#ffffff;font-size:24px;margin-bottom:16px;'>Hi {{ $json.name }}, we're on it.</h1><p style='color:rgba(255,255,255,0.6);font-size:15px;line-height:1.7;'>Thanks for your interest in {{ $json.property_type }}. One of our specialists will review your requirements and reach out within 24-48 hours with personalized recommendations.</p><p style='color:rgba(255,255,255,0.4);font-size:13px;margin-top:24px;'>The PropIQ Team</p></div></body></html>\"\n}",
+        "options": {}
+      },
+      "id": "812594e7-fa03-435f-ba7e-c1e0892b920a",
+      "name": "Send Nurture Email",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1472,
+        528
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://zgrgklchoqbnucybtlrq.supabase.co/rest/v1/activity_logs",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpncmdrbGNob3FibnVjeWJ0bHJxIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4MTYyMDQ4NSwiZXhwIjoyMDk3MTk2NDg1fQ.75e3nmsaknTrqPvLaSnIzlLZqfulYx2gCbvSnitWpk0"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpncmdrbGNob3FibnVjeWJ0bHJxIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4MTYyMDQ4NSwiZXhwIjoyMDk3MTk2NDg1fQ.75e3nmsaknTrqPvLaSnIzlLZqfulYx2gCbvSnitWpk0"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"lead_id\": \"{{ $('Prepare Routing').first().json.lead_id }}\",\n  \"action\": \"nurture_email_sent\",\n  \"details\": \"Lead score {{ $('Prepare Routing').first().json.lead_score }}/10 â€” placed in nurture sequence. Intent: {{ $('Prepare Routing').first().json.intent }}\"\n}",
+        "options": {}
+      },
+      "id": "8f214eac-0841-4f2b-8183-caef6a67a357",
+      "name": "Log Nurture Activity",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1696,
+        528
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"success\": true,\n  \"lead_id\": \"{{ $('Prepare Routing').first().json.lead_id }}\",\n  \"score\": {{ $('Prepare Routing').first().json.lead_score }},\n  \"status\": \"{{ $('Prepare Routing').first().json.status }}\",\n  \"message\": \"Lead qualified and processed successfully\"\n}",
+        "options": {}
+      },
+      "id": "5688bb40-70d5-4008-a7e7-5f629a36b877",
+      "name": "Send Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        2800,
+        384
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 12
+            }
+          ]
+        }
+      },
+      "id": "28387698-dc86-4a71-ae0f-4e43d3b3ee1f",
+      "name": "Every 12 Hours",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        1680,
+        1088
+      ]
+    },
+    {
+      "parameters": {
+        "url": "=https://zgrgklchoqbnucybtlrq.supabase.co/rest/v1/leads?booking_status=eq.pending&status=in.(hot,warm)&select=*",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpncmdrbGNob3FibnVjeWJ0bHJxIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4MTYyMDQ4NSwiZXhwIjoyMDk3MTk2NDg1fQ.75e3nmsaknTrqPvLaSnIzlLZqfulYx2gCbvSnitWpk0"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpncmdrbGNob3FibnVjeWJ0bHJxIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4MTYyMDQ4NSwiZXhwIjoyMDk3MTk2NDg1fQ.75e3nmsaknTrqPvLaSnIzlLZqfulYx2gCbvSnitWpk0"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "d0b1f28c-a34e-4774-87c9-c9568c2381c0",
+      "name": "Get Pending Leads",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1904,
+        1088
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Categorize leads by age for 3-day and 7-day follow-up cadence\nconst leads = $input.all();\nconst now = new Date();\n\nconst reminder1 = []; // ~day 3 (72h old, never contacted)\nconst reminder2 = []; // ~day 7 (168h old, >=72h since last contact)\nconst cold = [];      // day 8+ (192h+ old, no booking)\n\nfor (const item of leads) {\n  const lead = Array.isArray(item.json) ? item.json : [item.json];\n  \n  for (const l of lead) {\n    if (!l.id) continue;\n    \n    const createdAt = new Date(l.created_at);\n    const hoursOld = (now - createdAt) / (1000 * 60 * 60);\n    \n    const lastContacted = l.last_contacted ? new Date(l.last_contacted) : createdAt;\n    const hoursSinceContact = (now - lastContacted) / (1000 * 60 * 60);\n    \n    if (hoursOld >= 192) {\n      cold.push(l);\n    } else if (hoursOld >= 168 && hoursSinceContact >= 72) {\n      reminder2.push(l);\n    } else if (hoursOld >= 72 && hoursSinceContact >= 72) {\n      reminder1.push(l);\n    }\n  }\n}\n\nreturn [\n  ...reminder1.map(l => ({ json: { ...l, reminder_number: 1 } })),\n  ...reminder2.map(l => ({ json: { ...l, reminder_number: 2 } })),\n  ...cold.map(l => ({ json: { ...l, reminder_number: 3, mark_cold: true } }))\n];"
+      },
+      "id": "45dca26a-8147-4e11-a940-8cd2776f0dbb",
+      "name": "Categorize by Age",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2128,
+        1088
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.mark_cold }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "ba524ba6-faa7-433c-ac98-5ae13c366e72",
+      "name": "Mark as Cold?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2352,
+        1088
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "=https://zgrgklchoqbnucybtlrq.supabase.co/rest/v1/leads?id=eq.{{ $json.id }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpncmdrbGNob3FibnVjeWJ0bHJxIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4MTYyMDQ4NSwiZXhwIjoyMDk3MTk2NDg1fQ.75e3nmsaknTrqPvLaSnIzlLZqfulYx2gCbvSnitWpk0"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpncmdrbGNob3FibnVjeWJ0bHJxIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4MTYyMDQ4NSwiZXhwIjoyMDk3MTk2NDg1fQ.75e3nmsaknTrqPvLaSnIzlLZqfulYx2gCbvSnitWpk0"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"status\": \"cold\",\n  \"booking_status\": \"pending\"\n}",
+        "options": {}
+      },
+      "id": "416846ff-9f51-485e-8852-7f4a1ed71bb6",
+      "name": "Mark Lead Cold",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2560,
+        944
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://zgrgklchoqbnucybtlrq.supabase.co/rest/v1/activity_logs",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpncmdrbGNob3FibnVjeWJ0bHJxIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4MTYyMDQ4NSwiZXhwIjoyMDk3MTk2NDg1fQ.75e3nmsaknTrqPvLaSnIzlLZqfulYx2gCbvSnitWpk0"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpncmdrbGNob3FibnVjeWJ0bHJxIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4MTYyMDQ4NSwiZXhwIjoyMDk3MTk2NDg1fQ.75e3nmsaknTrqPvLaSnIzlLZqfulYx2gCbvSnitWpk0"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"lead_id\": \"{{ $json.id }}\",\n  \"action\": \"marked_cold\",\n  \"details\": \"Lead automatically marked as cold after 7 days without booking (day-3 and day-7 reminders sent)\"\n}",
+        "options": {}
+      },
+      "id": "bfa32f49-23c5-47ea-8ef1-ad8fde65b918",
+      "name": "Log Cold Status",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2784,
+        944
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.resend.com/emails",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer re_T3M6hV92_Ess3KCxWtf2xNLY1GgWLaw7C"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"from\": \"onboarding@resend.dev\",\n  \"to\": [\"{{ $json.email }}\"],\n  \"subject\": \"{{ $json.reminder_number === 1 ? 'Checking in â€” your property consultation is still open' : 'Final reminder â€” your consultation closes in 24 hours' }}\",\n  \"html\": \"<html><body style='background:#0a0a0a;font-family:Arial,sans-serif;padding:40px;'><div style='max-width:600px;margin:0 auto;background:#111111;border:1px solid rgba(255,255,255,0.08);border-radius:24px;padding:48px;'><h1 style='color:#ffffff;font-size:24px;margin-bottom:16px;'>{{ $json.reminder_number === 1 ? 'Hi ' + $json.name + ', just checking in.' : $json.name + ', last chance to book.' }}</h1><p style='color:rgba(255,255,255,0.6);font-size:15px;line-height:1.7;margin-bottom:32px;'>{{ $json.reminder_number === 1 ? 'It has been a few days since you reached out about ' + $json.property_type + ' in ' + $json.location + '. Your specialist has a personalized brief ready â€” pick a time that works for you and we will take it from there.' : 'This is the final reminder for your consultation about ' + $json.property_type + ' in ' + $json.location + '. After tomorrow, we will close the inquiry and your slot will be released.' }}</p><div style='text-align:center;'><a href='http://localhost:3000/book/{{ $json.id }}' style='display:inline-block;background:#00E5FF;color:#000;font-size:15px;font-weight:700;text-decoration:none;padding:16px 40px;border-radius:100px;'>Book Your Consultation â†’</a></div><p style='color:rgba(255,255,255,0.4);font-size:13px;margin-top:32px;text-align:center;'>The PropIQ Team</p></div></body></html>\"\n}",
+        "options": {}
+      },
+      "id": "e0b9f2c7-d1d6-4038-8092-e0797a6cca5e",
+      "name": "Send Reminder Email",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2560,
+        1232
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "=https://zgrgklchoqbnucybtlrq.supabase.co/rest/v1/leads?id=eq.{{ $json.id }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpncmdrbGNob3FibnVjeWJ0bHJxIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4MTYyMDQ4NSwiZXhwIjoyMDk3MTk2NDg1fQ.75e3nmsaknTrqPvLaSnIzlLZqfulYx2gCbvSnitWpk0"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpncmdrbGNob3FibnVjeWJ0bHJxIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4MTYyMDQ4NSwiZXhwIjoyMDk3MTk2NDg1fQ.75e3nmsaknTrqPvLaSnIzlLZqfulYx2gCbvSnitWpk0"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"last_contacted\": \"{{ new Date().toISOString() }}\"\n}",
+        "options": {}
+      },
+      "id": "425ac445-0788-4d9d-be7e-bd1358a826a2",
+      "name": "Update Last Contacted",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2784,
+        1232
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://zgrgklchoqbnucybtlrq.supabase.co/rest/v1/activity_logs",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpncmdrbGNob3FibnVjeWJ0bHJxIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4MTYyMDQ4NSwiZXhwIjoyMDk3MTk2NDg1fQ.75e3nmsaknTrqPvLaSnIzlLZqfulYx2gCbvSnitWpk0"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpncmdrbGNob3FibnVjeWJ0bHJxIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4MTYyMDQ4NSwiZXhwIjoyMDk3MTk2NDg1fQ.75e3nmsaknTrqPvLaSnIzlLZqfulYx2gCbvSnitWpk0"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"lead_id\": \"{{ $('Send Reminder Email').first().json.lead_id || '' }}\",\n  \"action\": \"reminder_sent\",\n  \"details\": \"Reminder #{{ $('Categorize by Age').first().json.reminder_number }} sent to lead\"\n}",
+        "options": {}
+      },
+      "id": "443ba222-38b2-4107-93fd-338747b7f15e",
+      "name": "Log Reminder",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3008,
+        1232
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "Validate Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Data": {
+      "main": [
+        [
+          {
+            "node": "Groq AI Qualification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Groq AI Qualification": {
+      "main": [
+        [
+          {
+            "node": "Parse Qualification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Qualification": {
+      "main": [
+        [
+          {
+            "node": "Store Lead in Supabase",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store Lead in Supabase": {
+      "main": [
+        [
+          {
+            "node": "Prepare Routing",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Routing": {
+      "main": [
+        [
+          {
+            "node": "Route by Score",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route by Score": {
+      "main": [
+        [
+          {
+            "node": "Generate Meeting Brief",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send Nurture Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Meeting Brief": {
+      "main": [
+        [
+          {
+            "node": "Parse Meeting Brief",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Meeting Brief": {
+      "main": [
+        [
+          {
+            "node": "Store Meeting Brief",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store Meeting Brief": {
+      "main": [
+        [
+          {
+            "node": "Send Booking Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Booking Email": {
+      "main": [
+        [
+          {
+            "node": "Notify Agent (Hot Lead)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Notify Agent (Hot Lead)": {
+      "main": [
+        [
+          {
+            "node": "Log Hot Lead Activity",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Hot Lead Activity": {
+      "main": [
+        [
+          {
+            "node": "Send Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Nurture Email": {
+      "main": [
+        [
+          {
+            "node": "Log Nurture Activity",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Nurture Activity": {
+      "main": [
+        [
+          {
+            "node": "Send Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Every 12 Hours": {
+      "main": [
+        [
+          {
+            "node": "Get Pending Leads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Pending Leads": {
+      "main": [
+        [
+          {
+            "node": "Categorize by Age",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Categorize by Age": {
+      "main": [
+        [
+          {
+            "node": "Mark as Cold?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark as Cold?": {
+      "main": [
+        [
+          {
+            "node": "Mark Lead Cold",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send Reminder Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Lead Cold": {
+      "main": [
+        [
+          {
+            "node": "Log Cold Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Reminder Email": {
+      "main": [
+        [
+          {
+            "node": "Update Last Contacted",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Last Contacted": {
+      "main": [
+        [
+          {
+            "node": "Log Reminder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "234804a8-5fb1-4d13-ab4d-29c629762223",
+  "meta": {
+    "instanceId": "beca6b10afe0e497afe213c8fd58923345d277a819e933361be483a397e71129"
+  },
+  "nodeGroups": [],
+  "id": "2JBzSjYSA547BYRH",
+  "tags": [
+    {
+      "updatedAt": "2026-06-13T06:59:30.968Z",
+      "createdAt": "2026-06-13T06:59:30.968Z",
+      "id": "1ZWJEVW7vmzsOgUe",
+      "name": "real-estate"
+    },
+    {
+      "updatedAt": "2026-06-16T22:23:34.836Z",
+      "createdAt": "2026-06-16T22:23:34.836Z",
+      "id": "60lQmNhGME7pD32J",
+      "name": "ai-qualification"
+    },
+    {
+      "updatedAt": "2026-06-16T22:24:01.042Z",
+      "createdAt": "2026-06-16T22:24:01.042Z",
+      "id": "FKx7XqBY29LzUgm8",
+      "name": "reminders"
+    },
+    {
+      "updatedAt": "2026-06-16T22:24:01.018Z",
+      "createdAt": "2026-06-16T22:24:01.018Z",
+      "id": "Q8UHZdWFWCcmEiNP",
+      "name": "re-engagement"
+    },
+    {
+      "updatedAt": "2026-06-16T22:23:34.860Z",
+      "createdAt": "2026-06-16T22:23:34.860Z",
+      "id": "djqRyzpE29UsnDVg",
+      "name": "lead-pipeline"
+    }
+  ]
+}

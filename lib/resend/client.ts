@@ -6,9 +6,11 @@ import {
   reminderEmailTemplate,
 } from "./templates";
 
-const resend = new Resend(process.env.RESEND_API_KEY);
-const FROM = process.env.RESEND_FROM_EMAIL || "noreply@realestate.com";
-const AGENT_EMAIL = process.env.AGENT_EMAIL || "agent@realestate.com";
+function getResend() {
+  return new Resend(process.env.RESEND_API_KEY);
+}
+function FROM() { return process.env.RESEND_FROM_EMAIL || "noreply@realestate.com"; }
+function AGENT_EMAIL() { return process.env.AGENT_EMAIL || "agent@realestate.com"; }
 
 export async function sendBookingEmail(params: {
   to: string;
@@ -20,8 +22,8 @@ export async function sendBookingEmail(params: {
 }): Promise<void> {
   const bookingUrl = `${process.env.NEXT_PUBLIC_APP_URL}/book/${params.leadId}`;
 
-  await resend.emails.send({
-    from: FROM,
+  await getResend().emails.send({
+    from: FROM(),
     to: params.to,
     subject: "Your Property Consultation is Ready",
     html: bookingEmailTemplate({
@@ -42,8 +44,8 @@ export async function sendConfirmationEmail(params: {
   propertyType: string;
   location: string;
 }): Promise<void> {
-  await resend.emails.send({
-    from: FROM,
+  await getResend().emails.send({
+    from: FROM(),
     to: params.to,
     subject: "Your Consultation Has Been Confirmed",
     html: confirmationEmailTemplate(params),
@@ -65,9 +67,9 @@ export async function sendAgentNotification(params: {
 }): Promise<void> {
   const dashboardUrl = `${process.env.NEXT_PUBLIC_APP_URL}/dashboard/appointments/${params.appointmentId}`;
 
-  await resend.emails.send({
-    from: FROM,
-    to: AGENT_EMAIL,
+  await getResend().emails.send({
+    from: FROM(),
+    to: AGENT_EMAIL(),
     subject: `🔥 New Consultation Booked — ${params.leadName} (Score: ${params.leadScore}/10)`,
     html: agentNotificationTemplate({
       ...params,
@@ -90,8 +92,8 @@ export async function sendReminderEmail(params: {
     "Final reminder — Your consultation expires soon",
   ];
 
-  await resend.emails.send({
-    from: FROM,
+  await getResend().emails.send({
+    from: FROM(),
     to: params.to,
     subject: subjects[params.reminderNumber - 1] || subjects[0],
     html: reminderEmailTemplate({
